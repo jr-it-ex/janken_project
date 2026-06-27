@@ -1,426 +1,173 @@
-  // === XSS Prevention Helper ===
-      function escapeHtml(text) {
-        const div = document.createElement("div");
-        div.textContent = text;
-        return div.innerHTML;
+/**
+ * Ultimate Janken v2 - Game Engine
+ * Rule: Each round, 1/2/3 are randomly assigned to Rock/Scissors/Paper.
+ *       Win = your hand's value. Draw = both get hand's value. Lose = 0.
+ *       First to 5 wins a set. Sudden death on tie.
+ */
+
+const HAND = { ROCK: 0, SCISSORS: 1, PAPER: 2 };
+const HAND_LABEL = ['グー', 'チョキ', 'パー'];
+const HAND_EMOJI = ['✊', '✌️', '✋'];
+const SET_SCORE = 5;
+
+// All 6 permutations of [1, 2, 3]
+const PERMUTATIONS = [
+  [1, 2, 3], [1, 3, 2], [2, 1, 3],
+  [2, 3, 1], [3, 1, 2], [3, 2, 1],
+];
+
+function randomValues() {
+  return PERMUTATIONS[Math.floor(Math.random() * PERMUTATIONS.length)];
+}
+
+// Returns: 1 = p1 wins, -1 = p2 wins, 0 = draw
+function judge(h1, h2) {
+  if (h1 === h2) return 0;
+  if ((h1 === HAND.ROCK && h2 === HAND.SCISSORS) ||
+      (h1 === HAND.SCISSORS && h2 === HAND.PAPER) ||
+      (h1 === HAND.PAPER && h2 === HAND.ROCK)) return 1;
+  return -1;
+}
+
+function calcTurn(h1, h2, values) {
+  const result = judge(h1, h2);
+  let p1Pts = 0, p2Pts = 0;
+
+  if (result === 1) {
+    p1Pts = values[h1];
+  } else if (result === -1) {
+    p2Pts = values[h2];
+  } else {
+    // Draw: both get their hand's value (same hand, same value)
+    p1Pts = values[h1];
+    p2Pts = values[h2];
+  }
+
+  return { result, p1Pts, p2Pts, h1, h2 };
+}
+
+// === Game State ===
+class UltimateJankenGame {
+  constructor(bestOf = 1) {
+    this.bestOf = bestOf; // 1 or 3
+    this.reset();
+  }
+
+  reset() {
+    this.sets = { p1: 0, p2: 0 };
+    this.resetSet();
+    this.matchFinished = false;
+    this.matchWinner = null;
+  }
+
+  resetSet() {
+    this.scores = { p1: 0, p2: 0 };
+    this.turn = 0;
+    this.values = null;
+    this.history = [];
+    this.setFinished = false;
+    this.setWinner = null;
+    this.suddenDeath = false;
+  }
+
+  startTurn() {
+    this.turn++;
+    if (this.suddenDeath) {
+      this.values = [0, 0, 0]; // No values in sudden death
+    } else {
+      this.values = randomValues();
+    }
+    return {
+      turn: this.turn,
+      values: [...this.values],
+      scores: { ...this.scores },
+      suddenDeath: this.suddenDeath,
+    };
+  }
+
+  submitHands(h1, h2) {
+    if (this.suddenDeath) {
+      const result = judge(h1, h2);
+      const entry = { turn: this.turn, h1, h2, result, p1Pts: 0, p2Pts: 0, suddenDeath: true };
+      this.history.push(entry);
+
+      if (result !== 0) {
+        this.setFinished = true;
+        this.setWinner = result === 1 ? 'p1' : 'p2';
+        this._checkMatch();
       }
+      return { ...entry, scores: { ...this.scores }, setFinished: this.setFinished, setWinner: this.setWinner, matchFinished: this.matchFinished, matchWinner: this.matchWinner };
+    }
 
-      const $ = (id) => document.getElementById(id);
-      const HAND_EMOJI = ["✊", "✌️", "✋"];
-      let ws = null;
-      let mySubmitted = false;
-      let currentTurn = 1;
-      let currentRoomId = null;
+    const turnResult = calcTurn(h1, h2, this.values);
+    this.scores.p1 += turnResult.p1Pts;
+    this.scores.p2 += turnResult.p2Pts;
 
-      // ════════ URL & Screen Detection ════════
-      const currentPath = location.pathname;
-      const params = new URLSearchParams(location.search);
-      const isInMatch = currentPath.includes("/match");
-      const codeFromURL = params.get("code")?.toUpperCase() || null;
+    const entry = { turn: this.turn, ...turnResult, values: [...this.values], suddenDeath: false };
+    this.history.push(entry);
 
-      // スクリーン切り替え
-      function showEntryScreen() {
-        $("entry-screen").classList.remove("hidden");
-        $("battle-screen").classList.remove("visible");
-        document.body.classList.remove("screen-battle");
-        $("header-title").textContent = "アルティメットじゃんけん";
-        $("header-badge").textContent = "WS ONLINE";
-      }
-
-      function showBattleScreen() {
-        $("entry-screen").classList.add("hidden");
-        $("battle-screen").classList.add("visible");
-        document.body.classList.add("screen-battle");
-        $("header-title").textContent = "⚔️ 対戦中";
-        $("header-badge").textContent = "BATTLE";
-      }
-
-      // 初期状態：URLパスによって判定
-      if (isInMatch) {
-        showBattleScreen();
+    // Check set win
+    if (this.scores.p1 >= SET_SCORE || this.scores.p2 >= SET_SCORE) {
+      if (this.scores.p1 !== this.scores.p2) {
+        this.setFinished = true;
+        this.setWinner = this.scores.p1 > this.scores.p2 ? 'p1' : 'p2';
+        this._checkMatch();
       } else {
-        showEntryScreen();
+        // Both hit 5+ at same time -> sudden death
+        this.suddenDeath = true;
       }
+    }
 
-      // URLパラメータからルームコードを自動入力（Entry画面の場合のみ）
-      if (codeFromURL && !isInMatch) {
-        $("join-code").value = codeFromURL;
-      }
+    return { ...entry, scores: { ...this.scores }, setFinished: this.setFinished, setWinner: this.setWinner, matchFinished: this.matchFinished, matchWinner: this.matchWinner, suddenDeath: this.suddenDeath };
+  }
 
-      // ════════ QR・リンク共有URL生成 ════════
-      function buildInviteUrl(roomId) {
-        const base = `${location.origin}${location.pathname.replace(/\/[^/]*$/, "")}`;
-        return `${base}/match?code=${roomId}`;
-      }
+  _checkMatch() {
+    if (this.setWinner) {
+      this.sets[this.setWinner]++;
+    }
+    const need = Math.ceil(this.bestOf / 2);
+    if (this.sets.p1 >= need || this.sets.p2 >= need) {
+      this.matchFinished = true;
+      this.matchWinner = this.sets.p1 >= need ? 'p1' : 'p2';
+    }
+  }
 
-      // ════════ WebSocket 接続初期化 ════════
-      function connectWS() {
-        const wsUrl = `wss://janken-project-back.onrender.com/ws`;
-        ws = new WebSocket(wsUrl);
+  nextSet() {
+    if (this.matchFinished) return;
+    this.resetSet();
+  }
 
-        ws.onopen = () => {
-          // Entry画面のみステータス更新
-          if ($("entry-status")) {
-            $("entry-status").textContent = "✅ サーバーに接続しました。";
-            $("entry-status").style.color = "var(--green)";
-            document
-              .querySelectorAll("#entry-section button")
-              .forEach((b) => (b.disabled = false));
-          }
-        };
+  getState() {
+    return {
+      bestOf: this.bestOf,
+      sets: { ...this.sets },
+      scores: { ...this.scores },
+      turn: this.turn,
+      values: this.values ? [...this.values] : null,
+      suddenDeath: this.suddenDeath,
+      setFinished: this.setFinished,
+      setWinner: this.setWinner,
+      matchFinished: this.matchFinished,
+      matchWinner: this.matchWinner,
+      history: this.history,
+    };
+  }
+}
 
-        ws.onmessage = (e) => {
-          const data = JSON.parse(e.data);
-          handleMessage(data);
-        };
+// === CPU AI ===
+function cpuChoose(values, suddenDeath) {
+  if (suddenDeath) return Math.floor(Math.random() * 3);
+  // Favor high-value hands with weight = value^2
+  const weights = values.map(v => v * v);
+  const total = weights.reduce((s, w) => s + w, 0);
+  let r = Math.random() * total;
+  for (let i = 0; i < 3; i++) {
+    r -= weights[i];
+    if (r <= 0) return i;
+  }
+  return 2;
+}
 
-        ws.onclose = () => {
-          if ($("entry-status")) {
-            $("entry-status").textContent =
-              "❌ サーバーとの接続が切れました。リロードしてください。";
-            $("entry-status").style.color = "var(--p2)";
-            document
-              .querySelectorAll("button")
-              .forEach((b) => (b.disabled = true));
-          }
-        };
-      }
-
-      // 初期化時、Entry画面のボタンを無効化
-      document
-        .querySelectorAll("#entry-section button")
-        .forEach((b) => (b.disabled = true));
-      connectWS();
-
-      // ════════ メッセージハンドリング ════════
-      function handleMessage(data) {
-        switch (data.type) {
-          case "waiting_random":
-            $("entry-section").classList.add("hidden");
-            $("lobby-section").classList.remove("hidden");
-            $("room-code-display").textContent = "RANDOM";
-            $("waiting-msg").innerHTML =
-              '<div class="icon">🔍</div><div class="text">対戦相手を探しています...</div>';
-            $("qr-btn-row").classList.add("hidden");
-            break;
-
-          case "room_created":
-            $("entry-section").classList.add("hidden");
-            $("lobby-section").classList.remove("hidden");
-            currentRoomId = data.roomId;
-            $("room-code-display").textContent = data.roomId;
-            $("qr-btn-row").classList.remove("hidden");
-            break;
-
-          case "game_start":
-            $("opp-name").textContent = data.oppName;
-            $("sc-label-opp").textContent = data.oppName;
-            $("waiting-msg").innerHTML =
-              '<div class="icon">🎮</div><div class="text">対戦相手が見つかりました！まもなく開始...</div>';
-            $("qr-btn-row").classList.add("hidden");
-            break;
-
-          case "state_sync":
-            showBattleScreen();
-            syncState(data.state);
-            break;
-
-          case "turn_result":
-            resolveResult(data);
-            break;
-
-          case "wait_opponent_next":
-            $("wait-submit").classList.remove("hidden");
-            $("wait-submit").innerHTML =
-              '<span class="spinner"></span>相手の準備を待っています...';
-            break;
-
-          case "opponent_disconnected":
-            alert("対戦相手との接続が切れました。");
-            location.reload();
-            break;
-
-          case "error":
-            if ($("entry-status")) {
-              $("entry-status").textContent = "❌ " + data.message;
-              $("entry-status").style.color = "var(--p2)";
-            }
-            break;
-        }
-      }
-
-      // ════════ 送信アクション ════════
-      const getName = () => $("display-name").value.trim() || "Player";
-
-      $("btn-rand-bo1").onclick = () =>
-        ws.send(
-          JSON.stringify({ type: "join_random", bo: 1, name: getName() }),
-        );
-      $("btn-rand-bo3").onclick = () =>
-        ws.send(
-          JSON.stringify({ type: "join_random", bo: 3, name: getName() }),
-        );
-      $("btn-create-bo1").onclick = () =>
-        ws.send(
-          JSON.stringify({ type: "create_room", bo: 1, name: getName() }),
-        );
-      $("btn-create-bo3").onclick = () =>
-        ws.send(
-          JSON.stringify({ type: "create_room", bo: 3, name: getName() }),
-        );
-
-      $("btn-join").onclick = () => {
-        const code = $("join-code").value.trim().toUpperCase();
-        if (code.length === 6) {
-          ws.send(
-            JSON.stringify({
-              type: "join_room",
-              roomId: code,
-              name: getName(),
-            }),
-          );
-        } else if ($("entry-status")) {
-          $("entry-status").textContent = "6文字のコードを入力してください";
-        }
-      };
-
-      // ════════ QRコード機能 ════════
-      $("show-qr").onclick = () => {
-        if (!currentRoomId) return;
-        const url = buildInviteUrl(currentRoomId);
-        const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(url)}`;
-        $("qr-img").src = qrSrc;
-        $("qr-url").textContent = url;
-        $("qr-modal").classList.remove("hidden");
-      };
-
-      $("close-qr").onclick = () => $("qr-modal").classList.add("hidden");
-
-      $("copy-link").onclick = async () => {
-        if (!currentRoomId) return;
-        const url = buildInviteUrl(currentRoomId);
-        try {
-          await navigator.clipboard.writeText(url);
-          alert("URLをコピーしました");
-        } catch (e) {}
-      };
-
-      $("copy-qr-url").onclick = async () => {
-        const url = $("qr-url").textContent;
-        try {
-          await navigator.clipboard.writeText(url);
-          alert("URLをコピーしました");
-        } catch (e) {}
-      };
-
-      $("leave-lobby").onclick = () => location.reload();
-      $("leave-game").onclick = () => location.reload();
-      $("mo-leave").onclick = () => location.reload();
-
-      // ════════ ゲームプレイ ════════
-      function submitHand(hand) {
-        if (mySubmitted) return;
-        mySubmitted = true;
-        document.querySelectorAll(".hand-btn").forEach((btn) => {
-          btn.disabled = true;
-          if (parseInt(btn.dataset.hand) === hand)
-            btn.classList.add("selected");
-        });
-        ws.send(JSON.stringify({ type: "submit_hand", hand }));
-        $("wait-submit").classList.remove("hidden");
-        $("wait-submit").innerHTML =
-          '<span class="spinner"></span>相手の提出を待っています...';
-      }
-
-      document
-        .querySelectorAll(".hand-btn")
-        .forEach(
-          (btn) =>
-            (btn.onclick = () =>
-              submitHand(parseInt(btn.dataset.hand))),
-        );
-
-      // ════════ UI 同期 ════════
-      function syncState(state) {
-        $("set-over").classList.remove("show");
-        $("match-over").classList.remove("show");
-        $("my-name").textContent = getName();
-        $("sc-label-me").textContent = getName();
-
-        currentTurn = state.turn;
-        $("score-me").textContent = state.scores.me;
-        $("score-opp").textContent = state.scores.opp;
-
-        if (state.bo > 1) {
-          $("sets-info").textContent =
-            `SET: ${getName()} ${state.sets.me} - ${state.sets.opp} ${$("opp-name").textContent} (BO${state.bo})`;
-        } else {
-          $("sets-info").textContent = "";
-        }
-
-        if (
-          currentTurn === 1 &&
-          state.scores.me === 0 &&
-          state.scores.opp === 0
-        ) {
-          $("history-list").innerHTML = "";
-        }
-
-        mySubmitted = false;
-        const values = state.values[currentTurn - 1] || [1, 2, 3];
-
-        if (state.suddenDeath) {
-          $("values-display").classList.add("sd");
-          $("values-title").textContent = "SUDDEN DEATH";
-          $("values-row").innerHTML =
-            '<div class="sd-label">普通のじゃんけん！勝った方が勝ち</div>';
-          for (let i = 0; i < 3; i++) $("vb-" + i).style.display = "none";
-          document.querySelectorAll(".hand-btn").forEach((btn) => {
-            btn.classList.remove("best", "worst", "selected");
-            btn.disabled = false;
-          });
-        } else {
-          $("values-display").classList.remove("sd");
-          $("values-title").textContent = `TURN ${currentTurn} - VALUES`;
-          $("values-row").innerHTML = values
-            .map(
-              (v, i) =>
-                `<div class="val-item"><span class="val-emoji">${escapeHtml(HAND_EMOJI[i])}</span><span class="val-num">${escapeHtml(String(v))}</span></div>`,
-            )
-            .join("");
-          const maxVal = Math.max(...values),
-            minVal = Math.min(...values);
-          document.querySelectorAll(".hand-btn").forEach((btn) => {
-            const h = parseInt(btn.dataset.hand);
-            btn.classList.remove("best", "worst", "selected");
-            btn.disabled = false;
-            if (values[h] === maxVal) btn.classList.add("best");
-            if (values[h] === minVal) btn.classList.add("worst");
-            $("vb-" + h).textContent = values[h];
-            $("vb-" + h).setAttribute("data-val", values[h]);
-            $("vb-" + h).style.display = "";
-          });
-        }
-
-        $("hand-section").classList.remove("hidden");
-        $("result-panel").classList.remove("show");
-        $("next-btn").classList.add("hidden");
-        $("wait-submit").classList.add("hidden");
-      }
-
-      // ════════ 結果表示 ════════
-      function resolveResult(data) {
-        $("wait-submit").classList.add("hidden");
-        $("hand-section").classList.add("hidden");
-
-        const {
-          myHand,
-          oppHand,
-          myPts,
-          oppPts,
-          result,
-          suddenDeath,
-          isSetOver,
-          isMatchOver,
-          iWonSet,
-          iWonMatch,
-          newScores,
-        } = data;
-        const rh1 = $("res-h1"),
-          rh2 = $("res-h2");
-
-        rh1.classList.remove("animate");
-        rh2.classList.remove("animate");
-        $("res-text").classList.remove("reveal");
-        $("res-detail").classList.remove("reveal");
-        $("pop-p1").classList.remove("pop");
-        $("pop-p1").textContent = "";
-        $("pop-p2").classList.remove("pop");
-        $("pop-p2").textContent = "";
-
-        rh1.textContent = HAND_EMOJI[myHand];
-        rh2.textContent = HAND_EMOJI[oppHand];
-        $("result-panel").classList.add("show");
-
-        requestAnimationFrame(() => {
-          rh1.classList.add("animate");
-          setTimeout(() => rh2.classList.add("animate"), 250);
-        });
-
-        setTimeout(() => {
-          if (!suddenDeath) {
-            if (result === 1 || result === 0) {
-              $("pop-p1").textContent = "+" + myPts;
-              $("pop-p1").classList.add("pop");
-            }
-            if (result === -1 || result === 0) {
-              $("pop-p2").textContent = "+" + oppPts;
-              $("pop-p2").classList.add("pop");
-            }
-          }
-        }, 600);
-
-        setTimeout(() => {
-          let resLabel =
-            result === 1 ? "WIN!" : result === -1 ? "LOSE" : "DRAW";
-          let resClass = result === 1 ? "win" : result === -1 ? "lose" : "draw";
-          $("res-text").textContent = resLabel;
-          $("res-text").className = "result-text " + resClass + " reveal";
-
-          if (suddenDeath) {
-            $("res-detail").textContent =
-              result === 0 ? "あいこ！もう一度" : "";
-          } else {
-            $("res-detail").innerHTML =
-              `<span class="pts-you">YOU +${escapeHtml(String(myPts))}</span><span class="pts-sep">/</span><span class="pts-cpu">相手 +${escapeHtml(String(oppPts))}</span>`;
-          }
-          $("res-detail").classList.add("reveal");
-
-          $("score-me").textContent = newScores.me;
-          $("score-opp").textContent = newScores.opp;
-
-          const row = document.createElement("div");
-          row.className = "hist-row";
-          row.innerHTML = `<span class="hist-turn">T${escapeHtml(String(currentTurn))}</span><span class="hist-hands">${escapeHtml(HAND_EMOJI[myHand])} vs ${escapeHtml(HAND_EMOJI[oppHand])}</span><span class="hist-pts"><span class="p1p">+${escapeHtml(String(myPts))}</span> / <span class="p2p">+${escapeHtml(String(oppPts))}</span></span>`;
-          $("history-list").prepend(row);
-
-          if (isMatchOver) {
-            setTimeout(() => {
-              $("mo-icon").textContent = iWonMatch ? "🏆" : "💀";
-              $("mo-msg").textContent = iWonMatch ? "YOU WIN!" : "YOU LOSE";
-              $("mo-msg").className =
-                "msg " + (iWonMatch ? "p1w" : "p2w");
-              $("mo-sub").textContent =
-                $("sets-info").textContent ||
-                `${newScores.me} - ${newScores.opp}`;
-              $("match-over").classList.add("show");
-            }, 800);
-          } else if (isSetOver) {
-            setTimeout(() => {
-              $("so-icon").textContent = iWonSet ? "✨" : "😤";
-              $("so-msg").textContent = iWonSet ? "SET WIN!" : "SET LOSE";
-              $("so-msg").className =
-                "msg " + (iWonSet ? "p1w" : "p2w");
-              $("so-sub").textContent = `${newScores.me} - ${newScores.opp}`;
-              $("set-over").classList.add("show");
-            }, 800);
-          } else {
-            $("next-btn").classList.remove("hidden");
-          }
-        }, 1300);
-      }
-
-      $("next-btn").onclick = () => {
-        $("next-btn").classList.add("hidden");
-        ws.send(JSON.stringify({ type: "next_turn" }));
-      };
-
-      $("so-btn").onclick = () => {
-        $("set-over").classList.remove("show");
-        ws.send(JSON.stringify({ type: "next_set" }));
-      };
-
-      $("mo-rematch").onclick = () => {
-        $("match-over").classList.remove("show");
-        ws.send(JSON.stringify({ type: "rematch" }));
-      };
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { HAND, HAND_LABEL, HAND_EMOJI, SET_SCORE, UltimateJankenGame, cpuChoose, judge, calcTurn, randomValues };
+}
